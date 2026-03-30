@@ -32,7 +32,7 @@ AUTH0_SECRET=
 # Next.js uygulamanın çalıştığı yerel adres
 AUTH0_BASE_URL=http://localhost:3000
 
-# Auth0 paneline girip Frontend uygulamanın ayarlarından alacağın bilgiler:
+# Auth0 paneline girip Frontend uygulamanın ayarlarında bu bilgileri bulabilirsiniz:
 AUTH0_AUDIENCE=
 AUTH0_DOMAIN=
 AUTH0_CLIENT_ID=
