@@ -9,7 +9,7 @@ export default function Home() {
                 </h1>
 
                 <div className="flex flex-col w-full sm:w-auto sm:flex-row gap-4 mt-2">
-                    <a href="/auth/login?returnTo=/dashboard&screen_hint=signup" className="flex h-12 items-center justify-center rounded-full bg-zinc-100 px-8 font-medium text-zinc-950 transition-colors hover:bg-zinc-500">Kayıt Ol</a>
+                    <a href="/auth/login?returnTo=/home&screen_hint=signup" className="flex h-12 items-center justify-center rounded-full bg-zinc-100 px-8 font-medium text-zinc-950 transition-colors hover:bg-zinc-500">Kayıt Ol</a>
                 </div>
             </main>
         </div>

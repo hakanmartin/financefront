@@ -33,6 +33,5 @@ export async function syncUserAction(email: string) {
 
 export async function getJwtToken() {
     const { token } = await auth0.getAccessToken();  // ← Artık gerçek JWT!
-    console.log("JWT TOKEN (3 parçalı olmalı):", token);
     return token;
 }
