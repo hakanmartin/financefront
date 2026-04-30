@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { createChart, ColorType, AreaSeries, LineSeries, Time, IChartApi, ISeriesApi } from "lightweight-charts";
 import { getJwtToken } from "../actions";
+import { useTheme } from "next-themes";
 
 interface ChartComponentProps {
     symbol?: string;
@@ -29,26 +30,16 @@ export default function ChartComponent({ symbol, range, isDummy = false, email }
     
     // For Custom Legend
     const [legendColors, setLegendColors] = useState<{ symbol: string; color: string; lastValue: number }[]>([]);
+    const { theme, systemTheme } = useTheme();
 
     // 1. Grafiğin iskeletini oluşturma (Sadece bir kere çalışır)
     useEffect(() => {
         if (!chartContainerRef.current) return;
 
-        const isDarkTheme = document.documentElement.classList.contains("dark") ||
-            window.matchMedia("(prefers-color-scheme: dark)").matches;
-
-        const textColor = isDarkTheme ? "rgba(255, 255, 255, 0.7)" : "#52525b";
-        const gridColor = isDarkTheme ? "rgba(255, 255, 255, 0.05)" : "rgba(0, 0, 0, 0.05)";
-
         const chart = createChart(chartContainerRef.current, {
             layout: {
                 background: { type: ColorType.Solid, color: "transparent" },
-                textColor: textColor,
                 attributionLogo: false,
-            },
-            grid: {
-                vertLines: { color: gridColor },
-                horzLines: { color: gridColor },
             },
             width: chartContainerRef.current.clientWidth,
             height: chartContainerRef.current.clientHeight,
@@ -74,8 +65,30 @@ export default function ChartComponent({ symbol, range, isDummy = false, email }
         return () => {
             window.removeEventListener("resize", handleResize);
             chart.remove();
+            chartRef.current = null;
         };
     }, []);
+
+    // Tema değiştiğinde grafiğin renklerini güncelle
+    useEffect(() => {
+        if (!chartRef.current) return;
+        
+        const currentTheme = theme === "system" ? systemTheme : theme;
+        const isDarkTheme = currentTheme !== "light";
+
+        const textColor = isDarkTheme ? "rgba(255, 255, 255, 0.7)" : "#52525b";
+        const gridColor = isDarkTheme ? "rgba(255, 255, 255, 0.05)" : "rgba(0, 0, 0, 0.05)";
+
+        chartRef.current.applyOptions({
+            layout: {
+                textColor: textColor,
+            },
+            grid: {
+                vertLines: { color: gridColor },
+                horzLines: { color: gridColor },
+            },
+        });
+    }, [theme, systemTheme]);
 
     // 2. Veriyi çekip grafiğe aktarma (symbol veya range değiştiğinde çalışır)
     useEffect(() => {

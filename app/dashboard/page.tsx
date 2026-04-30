@@ -7,6 +7,7 @@ import { useRouter } from "next/navigation";
 import { syncUserAction } from "@/app/actions";
 import { getJwtToken } from "../actions";
 import Navbar from "../components/Navbar";
+import { useSearchParams } from "next/navigation";
 
 // Portföye eklenecek öğenin tipi
 type PortfolioItem = {
@@ -34,6 +35,12 @@ export default function Dashboard() {
     const [amountInput, setAmountInput] = useState<string>("");
     const [purchaseDate, setPurchaseDate] = useState<string>(new Date().toISOString().split('T')[0]);
 
+    // Sağ Sidebar Varlık Arama
+    const [searchInputValue, setSearchInputValue] = useState<string>("");
+    const [searchResult, setSearchResult] = useState<any>(null);
+    const [isSearching, setIsSearching] = useState<boolean>(false);
+    const [isSearchResultSelected, setIsSearchResultSelected] = useState<boolean>(false);
+
     // Grafik Stateleri
     const [activeChartSymbol, setActiveChartSymbol] = useState<string>("THYAO.IS");
     const [activeChartRange, setActiveChartRange] = useState<string>("1mo");
@@ -48,6 +55,17 @@ export default function Dashboard() {
     const [portfolio, setPortfolio] = useState<PortfolioItem[]>([]);
     const { user, isLoading: isUserLoading } = useUser();
     const router = useRouter();
+    const searchParams = useSearchParams();
+
+    const currencyOption = searchParams.get('currency') || 'TRY';
+    const isUsdMode = currencyOption === 'USD';
+
+    const validAssetForRate = availableAssets.find(a => a.price_usd && a.price_usd > 0 && a.price_try && a.price_try > 0);
+    const usdTryRate = validAssetForRate ? (validAssetForRate.price_try / validAssetForRate.price_usd) : 32.5;
+
+    const formatCurrency = (val: number) => {
+        return val.toLocaleString(isUsdMode ? 'en-US' : 'tr-TR', { style: 'currency', currency: isUsdMode ? 'USD' : 'TRY' });
+    };
 
     // 2. Kullanıcı giriş yapmamışsa, login sayfasına geri postala
     useEffect(() => {
@@ -136,7 +154,23 @@ export default function Dashboard() {
 
     // Ekle Butonu İşlevi
     const handleAddAsset = async () => {
-        if (!selectedAssetSymbol || !amountInput || Number(amountInput) <= 0) return;
+        const actualSymbol = (isSearchResultSelected && searchResult) ? searchResult.symbol : selectedAssetSymbol;
+
+        let reqName = actualSymbol;
+        let reqType = 'stock';
+
+        if (isSearchResultSelected && searchResult) {
+            reqName = searchResult.name;
+            reqType = searchResult.asset_type || 'stock';
+        } else {
+            const existing = availableAssets.find(a => a.symbol === actualSymbol);
+            if (existing) {
+                reqName = existing.name;
+                reqType = existing.asset_type;
+            }
+        }
+
+        if (!actualSymbol || !amountInput || Number(amountInput) <= 0) return;
 
         try {
             const token = await getJwtToken();
@@ -146,9 +180,11 @@ export default function Dashboard() {
                 headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
                 body: JSON.stringify({
                     email: user.email,
-                    asset_symbol: selectedAssetSymbol,
+                    asset_symbol: actualSymbol,
                     quantity: Number(amountInput),
-                    purchase_date: purchaseDate
+                    purchase_date: purchaseDate,
+                    asset_name: reqName,
+                    asset_type: reqType
                 })
             });
 
@@ -157,9 +193,15 @@ export default function Dashboard() {
                 await fetchPortfolio(); // DB'den güncel veri
                 setAmountInput("");
                 setSelectedAssetSymbol("");
+                setSearchInputValue("");
+                setSearchResult(null);
+                setIsSearchResultSelected(false);
+            } else {
+                alert("Hata: " + (result.message || "Kayıt işlemi başarısız oldu."));
             }
         } catch (error) {
             console.error("Portföy eklenirken hata:", error);
+            alert("Portföy eklenirken bir hata oluştu.");
         }
     };
 
@@ -184,10 +226,32 @@ export default function Dashboard() {
         }
     };
 
+    // Tekil varlık silme
+    const handleDeleteAsset = async (assetSymbol: string) => {
+        if (!user?.email) return;
+
+        try {
+            const token = await getJwtToken();
+            const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3030';
+            const response = await fetch(`${API_URL}/api/portfolio/asset?email=${user.email}&asset_symbol=${assetSymbol}`, {
+                method: 'DELETE',
+                headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }
+            });
+
+            const result = await response.json();
+            if (result.success) {
+                await fetchPortfolio();
+            }
+        } catch (error) {
+            console.error("Varlık silinirken hata:", error);
+        }
+    };
+
     // Kartlar için hesaplamalar
     const getPrice = (symbol: string): number => {
         const asset = availableAssets.find(a => a.symbol === symbol);
-        return asset?.price_try ?? 1; // price_try /api/prices'tan hâlâ geliyorsa
+        if (!asset) return 1;
+        return isUsdMode ? (asset.price_usd || (asset.price_try / usdTryRate)) : (asset.price_try || 1);
     };
 
     const totalPortfolioValue = portfolio.reduce((sum, item) =>
@@ -195,7 +259,7 @@ export default function Dashboard() {
 
     const totalCash = portfolio
         .filter(i => i.asset_type === "cash")
-        .reduce((sum, item) => sum + item.quantity, 0); // Nakit TL olduğu için quantity = TL
+        .reduce((sum, item) => sum + item.quantity, 0) / (isUsdMode ? usdTryRate : 1);
 
     const totalStocks = portfolio
         .filter(i => i.asset_type === "stock")
@@ -242,6 +306,60 @@ export default function Dashboard() {
                     </div>
 
                     <div>
+                        <input
+                            type="text"
+                            value={searchInputValue}
+                            onChange={(e) => {
+                                const newVal = e.target.value;
+                                setSearchInputValue(newVal);
+                                if (newVal.trim() === '' && !isSearchResultSelected) {
+                                    setSearchResult(null);
+                                }
+                            }}
+                            onKeyDown={async (e) => {
+                                if (e.key === 'Enter' && searchInputValue.trim() !== '') {
+                                    e.preventDefault();
+                                    setIsSearching(true);
+                                    setSearchResult(null);
+                                    setIsSearchResultSelected(false);
+
+                                    try {
+                                        const token = await getJwtToken();
+                                        const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3030';
+                                        const res = await fetch(`${API_URL}/api/search?symbol=${encodeURIComponent(searchInputValue.trim())}`, {
+                                            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }
+                                        });
+                                        const data = await res.json();
+                                        if (data.success && data.data) {
+                                            setSearchResult(data.data);
+                                        }
+                                    } catch (err) {
+                                        console.error("Arama hatası:", err);
+                                    } finally {
+                                        setIsSearching(false);
+                                    }
+                                }
+                            }}
+                            placeholder="Varlık ara ve Enter'a bas..."
+                            className="w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 focus:outline-none focus:border-zinc-900 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:focus:border-zinc-100"
+                        />
+                        {isSearching ? (
+                            <div className="mt-3 flex justify-center py-2">
+                                <div className="h-4 w-4 animate-spin rounded-full border-2 border-zinc-200 border-t-zinc-900 dark:border-zinc-700 dark:border-t-zinc-100" />
+                            </div>
+                        ) : searchResult && (
+                            <div
+                                onClick={() => setIsSearchResultSelected(!isSearchResultSelected)}
+                                className={`mt-3 p-3 rounded-md cursor-pointer transition-all border ${isSearchResultSelected ? 'border-green-500 bg-green-50/50 dark:bg-green-900/10' : 'border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900 hover:border-zinc-300 dark:hover:border-zinc-700'}`}
+                            >
+                                <span className="font-medium text-zinc-900 dark:text-zinc-100">
+                                    {searchResult.name} ({searchResult.symbol})
+                                </span>
+                            </div>
+                        )}
+                    </div>
+
+                    <div>
                         <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-2">Tarih Seç</label>
                         <input
                             type="date"
@@ -266,14 +384,14 @@ export default function Dashboard() {
 
                     <button
                         onClick={handleAddAsset}
-                        disabled={!selectedAssetSymbol || !amountInput || Number(amountInput) <= 0}
+                        disabled={!(isSearchResultSelected ? searchResult?.symbol : selectedAssetSymbol) || !amountInput || Number(amountInput) <= 0}
                         className="mt-auto w-full rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800 disabled:bg-zinc-400 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-200 dark:disabled:bg-zinc-700 transition-colors"
                     >
                         Ekle
                     </button>
                     <div className="mt-4 flex flex-col gap-2 overflow-y-auto max-md:max-h-60">
-                        {portfolio.map((item) => (
-                            <div key={item.asset_symbol} className="text-xs text-zinc-600 dark:text-zinc-400 flex justify-between">
+                        {portfolio.map((item, index) => (
+                            <div key={item.id || `${item.asset_symbol}-${index}`} className="text-xs text-zinc-600 dark:text-zinc-400 flex justify-between">
                                 <span>{item.asset_symbol}</span>
                                 <span>{item.quantity} {item.asset_type === 'commodity' ? 'gram' : item.asset_type === 'cash' ? 'TL' : 'adet'}</span>
                             </div>
@@ -287,19 +405,19 @@ export default function Dashboard() {
                         <div className="bg-white shadow-sm dark:bg-zinc-900 dark:border dark:border-zinc-800 p-5 flex flex-col justify-center">
                             <span className="text-sm font-medium text-zinc-500 dark:text-zinc-400">Toplam Varlık</span>
                             <span className="text-2xl font-bold text-zinc-900 dark:text-white mt-1">
-                                {totalPortfolioValue.toLocaleString('tr-TR', { style: 'currency', currency: 'TRY' })}
+                                {formatCurrency(totalPortfolioValue)}
                             </span>
                         </div>
 
                         <div className="bg-white shadow-sm dark:bg-zinc-900 dark:border dark:border-zinc-800 p-5 flex flex-col justify-center group relative">
                             <div className="flex justify-between items-start">
-                                <span className="text-sm font-medium text-zinc-500 dark:text-zinc-400">Nakit (TRY)</span>
+                                <span className="text-sm font-medium text-zinc-500 dark:text-zinc-400">Nakit{!isUsdMode && " (TRY)"}</span>
                                 <button onClick={() => handleDeleteType('cash')} title="Nakit varlıklarını sil" className="text-zinc-400 hover:text-red-500 transition-all cursor-pointer">
                                     <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18"></path><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"></path><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"></path></svg>
                                 </button>
                             </div>
                             <span className="text-xl font-bold text-zinc-900 dark:text-white mt-1">
-                                {totalCash.toLocaleString('tr-TR', { style: 'currency', currency: 'TRY' })}
+                                {formatCurrency(totalCash)}
                             </span>
                         </div>
 
@@ -311,7 +429,7 @@ export default function Dashboard() {
                                 </button>
                             </div>
                             <span className="text-xl font-bold text-zinc-900 dark:text-white mt-1">
-                                {totalStocks.toLocaleString('tr-TR', { style: 'currency', currency: 'TRY' })}
+                                {formatCurrency(totalStocks)}
                             </span>
                         </div>
 
@@ -324,7 +442,7 @@ export default function Dashboard() {
                                 </button>
                             </div>
                             <span className="text-xl font-bold text-zinc-900 dark:text-white mt-1">
-                                {totalCommodity.toLocaleString('tr-TR', { style: 'currency', currency: 'TRY' })}
+                                {formatCurrency(totalCommodity)}
                             </span>
                         </div>
                     </div>
@@ -338,7 +456,7 @@ export default function Dashboard() {
                                     {activeChartSymbol === 'PORTFOLIO' ? 'Toplam Portföy Performansı' : activeChartSymbol === 'NORMALIZE' ? 'Karşılaştırmalı Performans (Normalize)' : `Varlık Performansı (${activeChartSymbol})`}
                                 </h2>
                                 <p className="text-sm text-zinc-500 dark:text-zinc-400">
-                                    Son {activeChartRange === '1mo' ? '1 aylık' : activeChartRange === '6mo' ? '6 aylık' : '1 yıllık'} görünüm
+                                    Son {activeChartRange === '1mo' ? '1 aylık' : activeChartRange === '3mo' ? '3 aylık' : activeChartRange === '6mo' ? '6 aylık' : activeChartRange === '1y' ? '1 yıllık' : activeChartRange === '3y' ? '3 yıllık' : activeChartRange === '5y' ? '5 yıllık' : 'yılbaşından bu yana'} görünüm
                                 </p>
                             </div>
 
@@ -371,24 +489,48 @@ export default function Dashboard() {
 
                             <div>
                                 <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-2">Süre Seç</label>
-                                <div className="flex w-full rounded-md bg-zinc-100 p-1 dark:bg-zinc-800">
+                                <div className="grid grid-cols-2 gap-1 w-full rounded-md bg-zinc-100 p-1 dark:bg-zinc-800">
                                     <button
                                         onClick={() => setTempChartRange('1mo')}
-                                        className={`flex-1 rounded py-1.5 text-xs font-medium transition-all ${tempChartRange === '1mo' ? 'bg-white text-zinc-900 shadow-sm dark:bg-zinc-950 dark:text-zinc-100' : 'text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100'}`}
+                                        className={`rounded py-1.5 text-xs font-medium transition-all ${tempChartRange === '1mo' ? 'bg-white text-zinc-900 shadow-sm dark:bg-zinc-950 dark:text-zinc-100' : 'text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100'}`}
                                     >
-                                        Aylık
+                                        1 Ay
+                                    </button>
+                                    <button
+                                        onClick={() => setTempChartRange('3mo')}
+                                        className={`rounded py-1.5 text-xs font-medium transition-all ${tempChartRange === '3mo' ? 'bg-white text-zinc-900 shadow-sm dark:bg-zinc-950 dark:text-zinc-100' : 'text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100'}`}
+                                    >
+                                        3 Ay
                                     </button>
                                     <button
                                         onClick={() => setTempChartRange('6mo')}
-                                        className={`flex-1 rounded py-1.5 text-xs font-medium transition-all ${tempChartRange === '6mo' ? 'bg-white text-zinc-900 shadow-sm dark:bg-zinc-950 dark:text-zinc-100' : 'text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100'}`}
+                                        className={`rounded py-1.5 text-xs font-medium transition-all ${tempChartRange === '6mo' ? 'bg-white text-zinc-900 shadow-sm dark:bg-zinc-950 dark:text-zinc-100' : 'text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100'}`}
                                     >
-                                        6 Aylık
+                                        6 Ay
+                                    </button>
+                                    <button
+                                        onClick={() => setTempChartRange('ytd')}
+                                        className={`rounded py-1.5 text-xs font-medium transition-all ${tempChartRange === 'ytd' ? 'bg-white text-zinc-900 shadow-sm dark:bg-zinc-950 dark:text-zinc-100' : 'text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100'}`}
+                                    >
+                                        YBB
                                     </button>
                                     <button
                                         onClick={() => setTempChartRange('1y')}
-                                        className={`flex-1 rounded py-1.5 text-xs font-medium transition-all ${tempChartRange === '1y' ? 'bg-white text-zinc-900 shadow-sm dark:bg-zinc-950 dark:text-zinc-100' : 'text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100'}`}
+                                        className={`rounded py-1.5 text-xs font-medium transition-all ${tempChartRange === '1y' ? 'bg-white text-zinc-900 shadow-sm dark:bg-zinc-950 dark:text-zinc-100' : 'text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100'}`}
                                     >
-                                        Yıllık
+                                        1 Yıl
+                                    </button>
+                                    <button
+                                        onClick={() => setTempChartRange('3y')}
+                                        className={`rounded py-1.5 text-xs font-medium transition-all ${tempChartRange === '3y' ? 'bg-white text-zinc-900 shadow-sm dark:bg-zinc-950 dark:text-zinc-100' : 'text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100'}`}
+                                    >
+                                        3 Yıl
+                                    </button>
+                                    <button
+                                        onClick={() => setTempChartRange('5y')}
+                                        className={`rounded py-1.5 text-xs font-medium transition-all col-span-2 ${tempChartRange === '5y' ? 'bg-white text-zinc-900 shadow-sm dark:bg-zinc-950 dark:text-zinc-100' : 'text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100'}`}
+                                    >
+                                        5 Yıl
                                     </button>
                                 </div>
                             </div>
@@ -413,6 +555,7 @@ export default function Dashboard() {
                                 <thead className="text-zinc-500 dark:text-zinc-500 text-xs uppercase tracking-wider">
                                     <tr>
                                         <th className="pb-3 font-medium">Varlık</th>
+                                        <th className="pb-3 font-medium text-center px-2 w-20">İşlem</th>
                                         <th className="pb-3 font-medium text-right">Miktar</th>
                                         <th className="pb-3 font-medium text-right">Alış Maliyeti</th>
                                         <th className="pb-3 font-medium text-right">Güncel Fiyat</th>
@@ -423,15 +566,15 @@ export default function Dashboard() {
                                 <tbody>
                                     {portfolio.filter(p => p.asset_type !== 'cash').length === 0 ? (
                                         <tr>
-                                            <td colSpan={6} className="py-8 text-center text-zinc-500">
+                                            <td colSpan={7} className="py-8 text-center text-zinc-500">
                                                 Henüz analiz edilecek bir hisse veya emtia bulunmuyor.
                                             </td>
                                         </tr>
                                     ) : (
-                                        portfolio.filter(p => p.asset_type !== 'cash').map((item) => {
+                                        portfolio.filter(p => p.asset_type !== 'cash').map((item, index) => {
                                             const currentPrice = getPrice(item.asset_symbol);
-                                            // Eğer veri tabanında eski kayıt varsa ve priceAtAdd yoksa güncel fiyatı baz al ki hata vermesin
-                                            const costPrice = item.priceAtAdd || currentPrice;
+                                            // priceAtAdd API'dan TL bazında gelir.
+                                            const costPrice = isUsdMode ? ((item.priceAtAdd || currentPrice) / usdTryRate) : (item.priceAtAdd || currentPrice);
                                             const totalValue = currentPrice * item.quantity;
                                             const totalCost = costPrice * item.quantity;
 
@@ -441,22 +584,31 @@ export default function Dashboard() {
                                             const isProfit = profitLoss >= 0;
 
                                             return (
-                                                <tr key={item.id} className="border-t border-zinc-100 dark:border-zinc-800/50 hover:bg-zinc-50 dark:hover:bg-zinc-800/20 transition-colors">
+                                                <tr key={item.id || `${item.asset_symbol}-${index}`} className="border-t border-zinc-100 dark:border-zinc-800/50 hover:bg-zinc-50 dark:hover:bg-zinc-800/20 transition-colors">
                                                     <td className="py-4">
                                                         <div className="font-bold text-zinc-900 dark:text-zinc-100">{item.asset_symbol}</div>
                                                         <div className="text-xs text-zinc-500">{item.name || item.asset_type}</div>
+                                                    </td>
+                                                    <td className="py-4 text-center px-2">
+                                                        <button
+                                                            onClick={() => handleDeleteAsset(item.asset_symbol)}
+                                                            className="text-xs font-semibold text-red-600 hover:text-white bg-red-50 hover:bg-red-500 dark:text-red-400 dark:bg-red-500/10 dark:hover:bg-red-500 dark:hover:text-white px-3 py-1.5 rounded-full transition-all border border-red-200 dark:border-red-900/50 hover:border-transparent cursor-pointer"
+                                                            title="Bu varlığı kaldır"
+                                                        >
+                                                            Kaldır
+                                                        </button>
                                                     </td>
                                                     <td className="py-4 text-right">
                                                         {item.quantity} <span className="text-xs">{item.asset_type === 'commodity' ? 'gr' : 'adet'}</span>
                                                     </td>
                                                     <td className="py-4 text-right">
-                                                        {costPrice.toLocaleString('tr-TR', { style: 'currency', currency: 'TRY' })}
+                                                        {formatCurrency(costPrice)}
                                                     </td>
                                                     <td className="py-4 text-right font-medium text-zinc-900 dark:text-zinc-200">
-                                                        {currentPrice.toLocaleString('tr-TR', { style: 'currency', currency: 'TRY' })}
+                                                        {formatCurrency(currentPrice)}
                                                     </td>
                                                     <td className="py-4 text-right font-bold text-zinc-900 dark:text-white">
-                                                        {totalValue.toLocaleString('tr-TR', { style: 'currency', currency: 'TRY' })}
+                                                        {formatCurrency(totalValue)}
                                                     </td>
                                                     <td className="py-4 text-right">
                                                         <div className={`inline-flex flex-col items-end ${isProfit ? 'text-emerald-500 dark:text-emerald-400' : 'text-rose-500 dark:text-rose-400'}`}>
@@ -466,7 +618,7 @@ export default function Dashboard() {
                                                                 ) : (
                                                                     <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="22 17 13.5 8.5 8.5 13.5 2 7"></polyline><polyline points="16 17 22 17 22 11"></polyline></svg>
                                                                 )}
-                                                                {isProfit ? '+' : ''}{profitLoss.toLocaleString('tr-TR', { style: 'currency', currency: 'TRY' })}
+                                                                {isProfit ? '+' : ''}{formatCurrency(profitLoss)}
                                                             </span>
                                                             <span className="text-xs opacity-90 bg-current/10 px-1.5 py-0.5 rounded mt-1">
                                                                 {isProfit ? '+' : ''}{profitLossPercent.toFixed(2)}%

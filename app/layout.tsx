@@ -3,7 +3,7 @@ import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { Auth0Provider } from '@auth0/nextjs-auth0/client';
 import { auth0 } from '@/lib/auth0';
-
+import { ThemeProvider } from "./components/ThemeProvider";
 const geistSans = Geist({
   variable: "--font-geist-sans",
   subsets: ["latin"],
@@ -27,11 +27,13 @@ export default async function RootLayout({
   const session = await auth0.getSession();
   
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
       <body className={`${geistSans.variable} ${geistMono.variable} antialiased`}>
         {/* İçine hiçbir parametre (domain, clientId vb.) YAZMIYORUZ */}
         <Auth0Provider user={session?.user}>
-          {children}
+          <ThemeProvider attribute="class" defaultTheme="dark" enableSystem={false}>
+            {children}
+          </ThemeProvider>
         </Auth0Provider>
       </body>
     </html>
